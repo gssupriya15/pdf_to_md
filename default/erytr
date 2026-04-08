@@ -1,0 +1,274 @@
+Source tag : OCV Migration to DBT_05e58865e4e0408a83c6719f4c9d7e5d-070426-0839-84.pdf
+Note : This extracted file is generated from SharePoint or Wiki content. If the source document contains images, charts, or graphical elements, they may not be fully converted into Markdown format. For complete clarity, please refer to the original source using the source tag provided above.
+
+# OCV Migration to DBT
+
+## Issue Description
+
+This is an analysis requirement done on OCV Jobs for LASER sources for LEDM/MHIT formats for classic printer sources. The aim is to convert current code base of OCV being written in scala & python into dbt. This migrated dbt code will run on top of the SQL warehouses present in Databricks and we will ingest data into Unity Catalogs in Databricks instead of redshift tables.
+
+## Analysis
+
+The first part of the analysis involves in-depth understanding of OCV code at written in scala and python so that we can transition the same logic into dbt:
+
+The Current OCV Job has in total 7 steps that run in sequence:
+
+1. 01-precheckmetrics
+2. 02-ocvprecheck
+3. 03-ocv
+4. 04-ocvbat
+5. 05-ocvloaderverifier
+6. 06-ocvloader
+7. 07-ocvloaderbat
+
+### Step 01: Pre-Check Metrics
+
+Checks if the assumed role in Databricks DEV has "FULL_CONTROL" permissions over these objects (metrics/kibana_approved_only, metrics/pre_kibana, ...) under " " bucket.metrics/operations hp-bigdata-databricks-prod-metrics-testresults
+
+### Step 02: ocvprecheck
+
+This step checks some of the pre-requisites and functionalities behaving properly.
+
+- Checks if the bonded-storage path is accessible. (This will be removed since we will be reading data from team_cumulus_dev.print_telem_private.laser_stdraw)
+- Checks if bonded storage has data.
+- Checks whether bonded-storage data has mvc 1 records. If yes then fails. If no then passes.
+- Checks whether we are able to connect to ocv service or not.
+- Checks if source_id present in cache table in databricks matches with the one given in parameter of the job.
+
+### Step 03: ocv
+
+This is the main step in OCV Job where most of the important transformations and actions are performed:
+
+- If `start_with_empty_cache` is enabled it removes all the tables and database name as well.
+- Then it creates database and all the tables if they do not exist already in the below given sequence (All this is done in OCVTables class):
+  - Database_name: ocv_cache_wja_ledm_dpp
+  - Cache_table: ocv_cache_wja_ledm_dpp.cache_table
+  - Export_table: ocv_cache_wja_ledm_dpp.export_table
+  - Drops Snapshot_table: ocv_cache_wja_ledm_dpp.snapshots_table (This is done to drop snapshots table created in previous run so that new one can be created for this run.)
+- Refresh cache table to refresh the metadata for cache_tables to avoid any warnings.
+- Remove cache_table_backup table. Then refresh cache_table again.
+- Purge expired entries for ocv_cache_wja_ledm_dpp.cache_table and remove records where lifetime of the records exceeds 30 days in cache_table by seeing if the difference between current_date and ocv_lot_id column and if the difference is more than 30 then we remove the whole lot from the cache_table.
+
+We remove records from cache_table that are older than 30 days. Get the pre and post counts of cache_table along with min and max insertion dates. Then we send this metrics to s3_metrics_output_path and s3_elk_outpu_path which is kibana metrics.
+
+After purging expired entries we call OCVProcessing class which handles further execution.
+
+In OCV Processing class we save snapshots table in the database " ". Firstly it reads the bonded storage data for mvc 0 records ocv_cache_wja_ledm_dpp only and then selects few columns from it and then filters out duplicate data based on hash column that it creates by concatenating ocv_id_hash and eea_valve_flag values. If the limit value given in params is not -1 then it limits the snapshots dataframe to the given value.
+
+After reading the bonded storage data as a dataframe it creates a request_json column where it keeps all the required tags from consumable_config_dyn and product_config_dyn. It removes xml declarations from product_config_dyn so that it can be parsed. Then it removes ASCII Control Characters with ' ' (space). Then it creates an XML Element Tree object from the product_config_dyn. Then it finds the required tags in the xml_dyns and put the values in the required pcdTemplate which is again a xml template string. This gives us the prunedpDyn. Then we check for the missing serial number tag in product_config_dyn. If the serial_number tag is missing we create a tag in the dyn and assign the value that we got from the snapshots df.
+
+For consumable_config_dyn the initial steps are same. But when it is creating the template it will look all the ConsumableInfo objects and in it ConsumableLabelCode objects (4 objects in total). If the value of ConsumableLable code objects is in the accepted values then it will create a template for that ConsumableInfo object with the required tags. Then it will append all the 4 templates with '\n' and create a final template by adding the ccheader and footer in it.
+
+Then this prunedPDyn and prunedCDyn is appended in a dictionary of below format:
+
+```
+{
+  uniqueid:
+  {
+    "data": {
+      "LedmProductConfigDyn": updatedPDyn,
+      "LedmConsumableConfigDyn": updatedCDyn
+    }
+  }
+}
+```
+
+This dictionary is dumped into a json string into the request_json column.
+
+For LEDM Enterprises Sources we do not prune either pdccfgdyn or ccfgdyn. We only add missing serial number tag to pdccfgdyn and append to the dictionary in above shown format and dump the json_string to request_json column.
+
+The above process was for LEDM sources. For MHIT sources there is just one single xml named complete_xml which is passed. For this we remove DeviceUsage and DeviceInformation tags. And then this xml string is appended in a dictionary of below format:
+
+```
+{
+  uniqueid:
+  {
+    "data": {
+      "RmaMhitUsageCollection": mydyn
+    }
+  }
+}
+```
+
+This dictionary is dumped into a json string into the request_json column.
+
+For PRINTERNET_MHIT_DPP source we have a separate method that removes certain other columns and then appends this pruned xml into below given format:
+
+```
+{
+  uniqueid:
+  {
+    "data": {
+      "mhitDeviceService": device_service_light,
+      "mhitFimService": fim_service,
+      "mhitSuppliesService": device_supplies_service
+    }
+  }
+}
+```
+
+This dictionary is dumped into a json string into the request_json column.
+
+In case of WJA_MHIT_DPP we don't have any xml to prune. So we create an XML template and fill in the data required from snapshot. Then this xml template converted to a xml string is fed to a dictionary in below format:
+
+```
+{
+  uniqueid:
+  {
+    "data": {
+      "RmaMhitUsageCollection": wja_xml
+    }
+  }
+}
+```
+
+This dictionary is dumped into a json string into the request_json column.
+
+Once request_json column is populated we drop certain non required columns from the snapshot. Get the count of total rows present in the snapshot. Save the snapshot as a table in databricks SQL named as ocv_cache_wja_ledm_dpp.snapshots_table as delta table. It then sets certain table properties and returns the count of rows in the snapshot.
+
+---
+
+Below is the diagram representing further processing that happens in ocv step:
+
+```
+Databricks Database
+{ocv_cache_jam_ledm_d
+Create
+ok cache_table
+cache_table_backup
+snapshots_tablettmp table,
+dropped on every new job
+execution)
+export_table
+refresh the metadata
+for cache_tables to
+avoid any warnings
+refresh cache_table
+drop cache_table_backup
+refresh cache_table
+Purge Records Older
+than 30 days from
+cache_table by taking
+difference between
+current_date and
+ocv_lot_id column
+OCVProcessing.go()
+updated_cache_table
+OCVProcessing.doWorkThreaded( Update Snapshots
+snapshots_table
+updated
+cache_table
+Add this records into cache_table
+We use the response dictionary to fill up OCV
+Authentication fields below export_table
+1. Printer Authentication Result State
+KICIMIYIOPC
+2. Online Authentication Result State
+KIC/MIYIOPC
+3. OCV Result Code KIC/M/Y/OPC
+4. OCV Result Code Error
+5 Cache Insertion Date
+OCV returns results which contain the following fields
+Removes hash values
+from snapshots_table
+present in cache_table
+Truncate already present export table first
+Removes duplicates
+based on hash column
+Request_json format
+(only for LEDM sources.
+for mhit it s different)
+Creats a json template
+from product and
+consumable config dyn
+to create request_json that
+will Be sent to ocv service:
+"LednProductconfig
++ updatedpoyn,
+"L ednconsunab] econf1goyn": updatedcoyn,
+Saves the data in
+snapshot_table
+in databricks sql table
+50000 records taken.,
+updated
+shapshots_table
+if table is empty
+Each Chunk at a time
+——=——> Bxiract
+from each row and append
+itin data key in auth request
+end loop
+history_table
+-Copy to
+updated_cache_table
+Copies each of the
+supplies from a
+record in the
+cache_table to t
+export_table.
+Resulting
+export_table should
+have 4X the records
+of the cache_table
+(KIC/MFY)
+ocv_cahe_<source_id>
+Removes all the records
+already present in
+nistory_table and keep
+1.) Result Code
+2.) InPrinterCartridgeAuthentication
+3.) OnlineCartridgeAuthentication
+Detect whether a supply has been
+in more than N different
+to
+seen
+printer  serial numbers
+only new records
+Logic for How OCV Authenticates Cartridges
+Set Cartriage Lire
+Stale to HP
+Does the supply have &
+valid digital signature?,
+Does the cartridge
+presents itself as HP;
+Set Cartridge Life
+State to Emulated
+Set Cartridge Life
+State to Emulated
+as the cartridge
+passed low toner
+threshold on
+insertion?
+as Printer Seen this
+cartridge before(from
+Digital Signature)?,
+No Change to the
+Cartridge Life State
+[ Set Cartridge Life ]
+State to Altered
+```
+
+---
+
+## Execution timings of the PROD run vs DBT run
+
+| Steps                | PROD    | DBT    |
+|----------------------|---------|--------|
+| OCV main Notebook    | 6m 42s  | 7m 23s |
+| Redshift load step   | 15m 4s  | 1m 26s |
+
+The redshift load step time is reduced since we writing it to unity tables in databricks and not into redshift tables hence the reduction in time. We can achieve the same results without using dbt as well.
+
+## Presentation for the OCV DBT walkthrough
+
+For analysis of moving OCV to DBT we created a mini POC of the OCV Job in DBT to run and capture the performance of the job.
+
+Following is the POC approach taken and observations:
+
+- We have segregated the OCV Code and created DBT models for all the query related transformations happening in the notebook.
+- In our current OCV architecture we use parallel processing to send data in chunks to OCV Service. This use case was not applicable in DBT and hence we kept the main notebook and calling to OCV service part as it is in its current state.
+- On running the dbt job we observed similar run times compared to the current OCV job runs.
+- Although the improvement is seen when writing the data to history table it is because we are writing to unity tables in Databricks instead of writing it to redshift.
+- Other observational facts are that DBT job runs both job cluster and SQL compute in parallel incurring more cost and execution time is not reduced enough to cope for this extra cost.
+
+We had done a brainstorming session with the leads and considering all the above points the final decision was not go with DBT approach and just migrate to Unity.
