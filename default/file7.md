@@ -1,0 +1,86 @@
+Source tag : https://rndwiki.inc.hpicorp.net/confluence/spaces/BigData/pages/1649119402/LASER+STDRAW+2.0
+
+Note : This extracted file is generated from SharePoint or Wiki content. If the source document contains images, charts, or graphical elements, they may not be fully converted into Markdown format. For complete clarity, please refer to the original source using the source tag provided above.
+
+# LASER STDRAW 2.0
+
+## Overview
+
+This document outlines the process of optimizing the LASER STDRAW Delta Lake by splitting the XML Dyns into a separate table and applying retention policies to reduce storage costs and improve read performance.
+
+## Objective
+
+To optimize storage and performance, we aim to:
+
+1. Split the Dyns into a different table from the STDRAW table.
+2. Create new tables using ZSTD Compression to reduce storage consumption.
+3. Liquid Cluster the Dyns & Non Dyns Table leading to performance improvements New STDRAW Table on 4 Keys.
+
+## Rationale
+
+We have calculated the estimated spend and savings for LASER STDRAW 2.0, as requested. Currently, the size of LASER STDRAW is approximately 235 TB. Implementing a retention policy for Dyns data is unlikely to significantly reduce costs since the most recent five years of data, account for the majority of the storage. Data older than five years amounts to only around 20 TB. So, liquid clustering and zstd compression are the only way to save some cost here.
+
+Please refer to the details below for further insights.
+
+### Estimated Spend
+
+| Categories | DEV (1 month) | ITG (6 Months) | PROD (Full History - 11 years) | Actuals post Data Copy in PROD |
+|------------|---------------|----------------|----------------------------------|----------------------------------|
+| LASER STDRAW 2.0 - TABLE SPLIT | 0 | $150 | $858 | $722 |
+| LASER STDRAW 2.0 - OPTIMIZE | 0 | $200 | $962 | $430 |
+| S3 cost (during Testing 10TB) | | | | $200 |
+| LASER STDRAW - TABLE SPLIT | 0 | $150 | $951 | |
+| LASER STDRAW - OPTIMIZE DYNS TABLE | 0 | $200 | $1,427 | |
+| Storage (Double Bubble) | | | | $3,128 |
+| ~235TB data / 1 month / $0.013 | | | | |
+| **Total Estimated cost** | | **$900** | **$7,327** | |
+| **Total Cost LASER STDRAW 2.0** | | | **$8,227** | |
+
+### Estimated Savings
+
+**Retention Policy - Dyns table**
+
+1. **Compute:** Nil
+2. **Storage:** ~ $21K per year
+
+## Implementation Plan
+
+### Steps
+
+**1. Assessment:**
+
+- Determine if all Dyns are necessary in the STDRAW table.
+- Estimate the cost and impact of splitting the tables, considering the presence of duplicate columns.
+
+**2. Table Splitting:**
+
+- Split the LASER STDRAW into DYNs and STDRAW(NON DYNS).
+- Use the DST team's Unified Table creation process to create the new STDRAW table.
+- Optimize Table
+- Validate the table for some count checks and performance.
+- Notify all the partners about the change before making the switch within Unity.
+  - Send communication
+  - Make the switch
+
+**3. Data Migration:**
+
+- Drop non-Dyn records from STDRAW and rename the table to DYNs table.
+- Implement the following structure:
+
+**Dyn Table (INK_STDRAW_DYNS/LASER_STDRAW_DYNS):**
+
+- Liquid Clustered on printer_id_key, product_number, source_id, receive_date
+- Enable Column stats on columns like printer_id, product_number etc. Note: Liquid Clustering (LC) is not recommended for tables >100 TB.
+
+**Fields:**
+
+xml_complete, xml_consumableconfigdyn, xml_deviceidentification, xml_deviceinformation, xml_devicesuppliesservice, xml_deviceusageservice, xml_fimservice, xml_printernet, xml_productconfigdyn, xml_productusagedyn, xml_surveysysinfo, xml_usageservice, xml_usagedatacollectiondyn, parser_results, parser_results_innerxml, uuid, source_id, product_number, receive_date, serial_number, printer_id_key, privacy_bases, privacy_detail_version, privacy_data_purposes, eea_strnec_flag, payload_hash, payload_id, privacy_bases_bitmap, privacy_data_purposes_bitmap, snapshot_ts, master_validity_code
+
+**Optimization:**
+
+- Apply Liquid Clustering (LC) on four columns in the LASER_STDRAW table: printer_id_key, receive_date, product_number, source_id.
+- Modify PSUJ View with the new table
+
+For Details in Validations and Code changes refer below docx:
+
+LASER STDRAW 2.0
