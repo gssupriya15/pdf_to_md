@@ -22,8 +22,6 @@ We have calculated the estimated spend and savings for LASER STDRAW 2.0, as requ
 
 Please refer to the details below for further insights.
 
-### Estimated Spend
-
 | Categories | DEV (1 month) | ITG (6 Months) | PROD (Full History - 11 years) | Actuals post Data Copy in PROD |
 |------------|---------------|----------------|----------------------------------|----------------------------------|
 | LASER STDRAW 2.0 - TABLE SPLIT | 0 | $150 | $858 | $722 |
@@ -33,7 +31,7 @@ Please refer to the details below for further insights.
 | LASER STDRAW - OPTIMIZE DYNS TABLE | 0 | $200 | $1,427 | |
 | Storage (Double Bubble) | | | | $3,128 |
 | ~235TB data / 1 month / $0.013 | | | | |
-| **Total Estimated cost** | | **$900** | **$7,327** | |
+| **Total Estimated cost** | **$900** | **$7,327** | | |
 | **Total Cost LASER STDRAW 2.0** | | | **$8,227** | |
 
 ### Estimated Savings
