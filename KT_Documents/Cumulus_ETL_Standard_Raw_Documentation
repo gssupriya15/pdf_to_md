@@ -1,0 +1,77 @@
+Source tag : https://hp.sharepoint.com/:w:/r/teams/DataOps310/Shared%20Documents/Data%20Ops%20documents/Documents/Understanding%20docs/Cumulus_ETL_Standard_Raw_Documentation.docx?d=wa37694cdf9c04e5ba677b832072db8be&csf=1&web=1&e=28lAeP
+
+Note : This extracted file is generated from SharePoint or Wiki content. If the source document contains images, charts, or graphical elements, they may not be fully converted into Markdown format. For complete clarity, please refer to the original source using the source tag provided above.
+
+# Cumulus Data Product – ETL Standard Raw Process Documentation
+
+This document provides a detailed explanation of the Cumulus ETL Standard Raw process. The objective is to describe the architecture, flow, data handling logic, quality checks, and operational mechanisms in a clear and structured manner without going into deep code-level detail.
+
+## 1. Overview of the Cumulus Standard Raw Process
+
+- The Standard Raw process is a core ETL component within the Cumulus data product. It primarily handles telemetry data received from legacy LEDM sources via the Pepto ingestion layer.
+- Daily, the system processes approximately 700 GB of payload data across multiple sources.
+- There are 14 parallel job runs where 4 jobs are for ink and 10 for laser printer sources. PSUJ, OCV and XREF are the 3 major downstream for STDRAW.
+- All jobs are typically complete within three hours.
+
+## 2. Data Sources and Input Format
+
+- The source of data for Standard Raw is the Pepto landing layer.
+- The payload is received as XML stored in Unity Catalog tables as string fields. These payloads are nested and may contain multiple XML tags representing device information, usage metrics, supply data, and other telemetry attributes.
+- The schema varies depending on whether the source belongs to ink or laser printers.
+
+## 3. Job Architecture and Execution Flow
+
+The ETL workflow consists of three primary components executed in sequence within the same job:
+
+1. Main Body
+2. BAT and Component BAT
+
+> Note: There is one common notebook for ink and one for laser, each driven by source ID and metadata configuration. Internally, the notebook calls additional sub-notebooks for specific processing tasks.
+
+### 3.1 Main Body Processing Logic
+
+The Main Body component performs the core ETL operations:
+
+- It reads payload data from Pepto based on source ID and received date (T-1), removes duplicates, validates required fields, applies business rules, generates error codes for malformed records, and sets flag indicators such as master validity codes.
+- Column extraction is driven by metadata Excel files stored in Unity catalog volumes.
+- Separate metadata files exist for ink and laser sources. Each metadata record defines the extraction path from the XML payload, the transformation logic (written in PySpark), cleansing rules, and business logic.
+- This design allows flexible addition or modification of columns without rewriting the core ETL framework.
+- The process extracts over 1,200 columns from payload data. Transformations may include type casting, string cleansing, uppercase conversion, business rule application, and validation checks.
+- Important columns have stricter validation logic that may trigger job failure if conditions are not met.
+- Data is written into Unity Catalog Delta tables. The table structure is divided into two categories: dines and non-dines.
+
+#### Dines and Non-Dines Separation
+
+- Dines refer to large XML-based columns that are rarely accessed by downstream systems.
+- Non-dines represent frequently used structured columns required for analytics and downstream processing. To optimize storage and performance, these were separated into different tables.
+- Historical storage optimization initiatives included liquid clustering and Z-standard compression.
+- These efforts reduced total storage from approximately 800 TB to 250 TB. Lifecycle policies were applied, retaining only recent years of dines data while maintaining full history for non-dines.
+
+### 3.2 BAT – Data Profiling and Quality Reporting
+
+BAT (Basic Acceptance Testing) runs immediately after the main body.
+
+- It performs daily data profiling, compares source and target counts, calculates good and bad record counts, validates null percentages in critical fields, and checks duplicate records. Results are generated in JSON format and converted into HTML reports sent via email.
+- Failures in BAT may either raise warnings or errors. Critical failures may require investigation and potential reprocessing, while warnings are monitored without halting downstream workflows.
+
+### 3.3 Component BAT – Business Logic Revalidation
+
+Component BAT performs secondary validation by sampling 25–50% of the loaded data and reapplying transformation logic defined in metadata.
+
+- It verifies derived columns, error flags, hash fields, and downstream critical attributes such as OCV identifiers. This ensures business rules are correctly applied after data loading.
+- If Component BAT detects severe issues, the job may require manual investigation. However, most issues arise from source data inconsistencies rather than code defects.
+
+## 4. Failure Handling and Monitoring
+
+- Job failures typically occur due to data issues from upstream systems or intermittent infrastructure limitations.
+- Code-level failures are rare. In case of source data problems, the ingestion team reprocesses corrected data, and pipelines are re-run. Delta Lake versioning enables rollback and overwrite capabilities when necessary.
+- Example: Suppose if a failure occurs on specific execution date, the data for that execution date is overwritten by re-running the job.
+- Monitoring is performed through Databricks workflows, automated email reports, and dashboards. Initiatives such as KLO agents are being introduced to auto-detect failures and re-trigger pipelines in case of infrastructure-related interruptions.
+
+## 5. Focus on Data Quality and Future Improvements
+
+A key discussion point in the KT session was enhancing anomaly detection. The goal is to build intelligent agents capable of understanding data patterns across sources, identifying deviations, and proactively flagging unexpected changes. This would extend beyond static validation rules and enable predictive data quality monitoring.
+
+## Conclusion
+
+The Cumulus Standard Raw ETL process is a metadata-driven, scalable, and quality-focused pipeline that transforms raw XML telemetry payloads into structured, analytics-ready Delta tables. Through separation of dines and non-dines, rigorous quality checks, and storage optimization strategies, the platform ensures reliability, cost efficiency, and operational stability within HP’s DataOS ecosystem.
