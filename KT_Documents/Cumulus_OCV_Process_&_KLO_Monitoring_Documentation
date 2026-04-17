@@ -1,0 +1,129 @@
+Source tag : https://hp.sharepoint.com/:w:/r/teams/DataOps310/Shared%20Documents/Data%20Ops%20documents/Documents/Understanding%20docs/Cumulus_OCV_Process_%26_KLO_Monitoring_Documentation.docx?d=w449cd7a44802459cb22a11a17605fb87&csf=1&web=1&e=wMN64q
+
+Note : This extracted file is generated from SharePoint or Wiki content. If the source document contains images, charts, or graphical elements, they may not be fully converted into Markdown format. For complete clarity, please refer to the original source using the source tag provided above.
+
+# Cumulus OCV Process & KLO Monitoring Documentation
+
+This document provides a detailed explanation of the Cumulus OCV (Online Cartridge Verification) pipeline and KLO monitoring process. The objective is to describe the architecture, processing flow, data handling logic, and operational monitoring mechanisms in a clear and structured manner without going into deep code-level implementation.
+
+## 1. Overview of the OCV Process
+- The OCV (Online Cartridge Verification) pipeline is an ETL process within the Cumulus data platform that verifies whether cartridges installed in printers are authentic.
+- The pipeline primarily works with laser printer telemetry data and validates cartridge details using an external verification service. Ink printer cartridge validation is handled separately by another workflow.
+- The OCV pipeline consumes processed telemetry data from the Standard Raw ETL pipeline, which acts as the upstream source for device and cartridge information.
+- The verification logic ensures that each printer-cartridge combination is validated efficiently while avoiding repeated verification of unchanged cartridges.
+- The pipeline uses caching, parallel API calls, and staged data transformations to ensure scalable processing across multiple printer telemetry sources.
+
+## 2. Data Sources and Input Format
+- The primary input for the OCV pipeline is telemetry data produced by the Standard Raw ETL process.
+- The input dataset contains printer-level information including cartridge attributes such as cartridge serial numbers, product identifiers, install dates, and manufacturer details.
+- Each printer may contain multiple cartridges represented using color identifiers such as K (Black), C (Cyan), M (Magenta), and Y (Yellow).
+- The OCV pipeline extracts the required fields from Standard Raw tables and prepares them for verification with the external authentication service.
+- Only the relevant columns required for verification are selected to reduce processing overhead.
+
+## 3. Pipeline Architecture and Execution Flow
+The OCV workflow consists of multiple stages executed sequentially within the ETL pipeline:
+1. Snapshot Table Creation
+2. Cache Table Comparison
+3. OCV Service Verification
+4. Export Table Transformation
+5. History Table Storage
+Each stage ensures efficient verification and optimized processing.
+
+### 3.1 Snapshot Table Processing
+The Snapshot table acts as a temporary staging table used during pipeline execution.
+- Data is extracted from Standard Raw tables and written into the Snapshot table with only the required fields needed for cartridge verification.
+- This reduces the size of the working dataset and simplifies downstream transformations.
+- Each row in the Snapshot table typically represents a single printer record containing information about multiple cartridges installed in that device.
+- The Snapshot table contains only the latest records that need to be processed in the current execution cycle.
+- Once processing is completed, this table is cleared and recreated during the next pipeline run.
+
+### 3.2 Cache Table – Duplicate Processing Prevention
+The Cache table is designed to prevent repeated verification of cartridges that were recently processed.
+- Printer cartridges do not change frequently, so verifying the same cartridge every day would result in unnecessary processing.
+- To avoid this, the system stores recently verified records in the Cache table for a duration of 30 days.
+- During processing, records from the Snapshot table are compared with the Cache table using a unique identifier.
+- If a matching record already exists in the cache, the verification request is skipped.
+- Only new or modified records are sent to the verification service.
+- Records older than 30 days are automatically removed from the Cache table to allow periodic re-verification if necessary.
+
+### 3.3 Cartridge Identification Logic
+To uniquely identify each cartridge within a printer, the system generates a hash identifier.
+- The hash is created by combining key attributes such as product number, cartridge serial number, manufacturer date, and installation date.
+- This hash represents a unique printer-cartridge combination.
+- The identifier is used to detect duplicates, compare against cached records, and track cartridge verification status across pipeline runs.
+
+### 3.4 OCV Service Verification
+Once records that require verification are identified, they are sent to the external OCV verification service.
+- The service is hosted on AWS and performs authentication checks on cartridge data.
+- To improve performance, records are processed in parallel batches.
+- Each batch contains approximately 100 records, and multiple batches are processed simultaneously using parallel threads.
+- The request payload contains simplified cartridge information extracted from the telemetry data.
+
+The verification service performs several checks, including:
+- Digital signature validation
+- Cartridge authenticity verification
+- Serial number reuse detection
+- Printer firmware compatibility checks
+
+After validation, the service returns authentication results indicating whether the cartridge is authentic, suspicious, invalid, or associated with an error condition.
+
+### 3.5 Export Table – Cartridge-Level Transformation
+After receiving the verification response, results are temporarily stored in the Export table.
+- In the Snapshot table, a single printer record may contain information for multiple cartridges.
+- The Export table expands this structure so that each cartridge becomes a separate record.
+- This transformation simplifies tracking authentication results at the cartridge level.
+- Duplicate entries are also filtered during this stage before writing the final results.
+
+### 3.6 History Table – Long-Term Storage
+The History table is the final storage location for verified cartridge data.
+- This table maintains a historical record of cartridge authentication results.
+- The system avoids inserting duplicate entries when the authentication status remains unchanged.
+- New records are inserted only when there is a change in authentication state or when a new cartridge appears in the printer.
+- The History table is used by downstream systems including analytics platforms, reporting tools, and warranty validation processes.
+
+## 4. KLO Monitoring and Operational Checks
+KLO monitoring is responsible for tracking the health and execution status of ETL pipelines.
+- The monitoring framework observes both Standard Raw and OCV pipelines to ensure daily job completion and data availability.
+- In total, 23 ETL jobs are monitored within this environment.
+- Out of these, 14 jobs belong to the Standard Raw pipeline, while 9 jobs belong to the OCV pipeline.
+- Monitoring dashboards track job status, execution duration, and data processing metrics.
+- If a job fails or takes longer than expected, alerts are triggered and the issue is investigated.
+
+## 5. Data Volume Monitoring and Anomaly Detection
+In addition to job status monitoring, the system tracks daily data volumes to detect anomalies.
+- Key metrics include the total number of telemetry records processed and the number of distinct printers reporting data.
+- Data volumes are compared with historical trends to identify unexpected spikes or drops.
+- Weekly comparisons are often used to determine whether the observed variation is normal or abnormal.
+- If deviations persist beyond expected thresholds, the integration team investigates potential upstream ingestion issues.
+
+## 6. Seasonal Trend Analysis
+Some variations in telemetry data are expected due to seasonal patterns.
+For example:
+- Printer usage may decrease during holidays or regional events.
+- Certain geographic regions may experience temporary usage drops due to local factors.
+
+To prevent unnecessary alerts, the system performs seasonal trend analysis using historical telemetry patterns. If a drop aligns with historical trends, it is considered expected behavior. Otherwise, the issue is flagged for investigation.
+
+## 7. Monitoring Tools and Automation
+Historically, monitoring and alerting were implemented using Splunk dashboards.
+The monitoring framework is currently being enhanced by integrating dashboards and alerts directly within Databricks workflows.
+The objective is to automate operational monitoring by:
+- Automatically detecting job failures
+- Sending notifications to collaboration channels
+- Identifying abnormal data patterns
+- Triggering alerts for manual investigation
+
+These improvements reduce manual monitoring effort and improve response time during failures.
+
+## 8. Data Retention Policies
+Different datasets within the Cumulus environment follow different retention policies depending on business and regulatory requirements.
+- Ink printer telemetry data is typically retained for longer durations due to extended analytics needs.
+- Some laser telemetry datasets have shorter retention periods depending on storage optimization strategies.
+- Retention policies are defined based on data usage patterns, regulatory requirements, and cost considerations.
+
+## Conclusion
+The Cumulus OCV pipeline is a scalable verification system designed to validate printer cartridges efficiently using telemetry data and external authentication services.
+
+By leveraging staged processing, caching mechanisms, parallel API calls, and structured historical storage, the system ensures efficient verification while minimizing redundant processing.
+
+Operational monitoring through KLO frameworks and data volume analysis ensures that ETL pipelines remain reliable and stable. Continuous improvements in automation and anomaly detection further strengthen the operational resilience of the Cumulus data platform.
